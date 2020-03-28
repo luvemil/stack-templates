@@ -23,6 +23,41 @@ description:         Please see the README on GitHub at <https://github.com/{{gi
 dependencies:
 - base >= 4.7 && < 5
 - mtl
+- tomland
+- bytestring
+
+ghc-options:
+  - -Wall
+  - -Wincomplete-uni-patterns
+  - -Wincomplete-record-updates
+  - -Wcompat
+  - -Widentities
+  - -Wredundant-constraints
+  - -fhide-source-paths
+  - -Wpartial-fields
+
+default-extensions:
+  - BangPatterns
+  - ConstraintKinds
+  - DataKinds
+  - DeriveGeneric
+  - DerivingStrategies
+  - DerivingVia
+  - FlexibleContexts
+  - FlexibleInstances
+  - GeneralizedNewtypeDeriving
+  - InstanceSigs
+  - KindSignatures
+  - LambdaCase
+  - MultiParamTypeClasses
+  - OverloadedStrings
+  - OverloadedLabels
+  - RecordWildCards
+  - ScopedTypeVariables
+  - TypeApplications
+  - TypeFamilies
+  - TypeOperators
+
 
 library:
   source-dirs: src
@@ -57,69 +92,66 @@ main = defaultMain
 main :: IO ()
 main = putStrLn "Test suite not yet implemented"
 
-{-# START_FILE src/Lib.hs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving, RecordWildCards, TypeApplications #-}
+{-# START_FILE config.toml #-}
+version="0.1.0"
 
+{-# START_FILE src/Lib.hs #-}
 module Lib
-    ( loadEnv
-    , runEnv
+    ( main
     )
 where
 
-import           Control.Monad.Reader
 import           Lib.App
-import           Lib.Env
+import           Lib.Config                     ( Config(..)
+                                                , loadConfig
+                                                )
+import           Lib.Server                     ( application )
+import           Lib.StaticInfo                 ( StaticInfo(..) )
 
--- Debug implementation of env loader
-loadEnv :: IO AppEnv
-loadEnv =
-    let sVersion = "0.0.1"
-    in  pure . Env $ StaticInfo { .. }
+mkAppEnv :: Config -> IO AppEnv
+mkAppEnv Config {..} = do
+    -- IO configuration
 
--- Placeholder implementation of App
-runEnv :: AppEnv -> IO ()
-runEnv env = runApp app env
-  where
-    app = do
-        sInfo <- grab @StaticInfo
-        liftIO $ putStrLn $ "Version " ++ (sVersion sInfo)
+    -- pure configuration
+    let sInfo    = StaticInfo { sVersion = cVersion }
+    pure Env { .. }
+
+-- | Basic runner. Here you can fork execution and put a `run "8080" $ application env` 
+-- | to have your server listen on a port.
+runServer :: AppEnv -> IO ()
+runServer env = application env
+
+main :: IO ()
+main = loadConfig >>= mkAppEnv >>= runServer
 
 {-# START_FILE src/Lib/App.hs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
 module Lib.App
-    ( App
-    , runApp
-    , AppEnv
+    ( module Lib.App.Env
+    , module Lib.App.Monad
     )
 where
 
-import           Control.Monad.Reader
-import           Lib.Env
+import           Lib.App.Env
+import           Lib.App.Monad
 
-type AppEnv = Env App
+{-# START_FILE src/Lib/App/Env.hs #-}
+{-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
-newtype App a = App
-    { unApp :: ReaderT AppEnv IO a
-    } deriving (Functor, Applicative, Monad, MonadIO, MonadReader AppEnv)
+module Lib.App.Env
+    ( Env(..)
+    , grab
+    )
+where
 
+import           Lib.StaticInfo                 ( StaticInfo )
 
-runApp :: App a -> AppEnv -> IO a
-runApp a env = runReaderT (unApp a) env
-
-{-# START_FILE src/Lib/Env.hs #-}
-{-# LANGUAGE TypeApplications, KindSignatures, RankNTypes, MultiParamTypeClasses, ScopedTypeVariables #-}
-module Lib.Env (Env(..), StaticInfo(..), grab) where
-
+import           Data.Kind                      ( Type )
 import           Control.Monad.Reader           ( MonadReader
                                                 , ask
                                                 )
 
-data StaticInfo = StaticInfo
-    { sVersion :: String
-    }
-
-data Env (m :: * -> *) = Env
+data Env (m :: Type -> Type) = Env
     { sInfo :: StaticInfo
     }
 
@@ -133,13 +165,96 @@ grab :: forall  field env m . (MonadReader env m, Has field env) => m field
 grab = fmap (obtain @field) ask
 {-# INLINE grab #-}
 
+{-# START_FILE src/Lib/App/Monad.hs #-}
+module Lib.App.Monad
+    ( App
+    , runApp
+    , AppEnv
+    )
+where
+
+import           Control.Monad.Reader
+import           Lib.App.Env                    ( Env )
+
+type AppEnv = Env App
+
+-- | Main application monad.
+newtype App a = App
+    { unApp :: ReaderT AppEnv IO a
+    } deriving (Functor, Applicative, Monad, MonadIO, MonadReader AppEnv)
+
+
+runApp :: AppEnv -> App a -> IO a
+runApp env a = runReaderT (unApp a) env
+
+{-# START_FILE src/Lib/StaticInfo.hs #-}
+module Lib.StaticInfo (StaticInfo(..)) where
+
+import Data.ByteString.Char8 (ByteString)
+
+data StaticInfo = StaticInfo
+    { sVersion :: ByteString
+    }
+
+{-# START_FILE src/Lib/Server.hs #-}
+module Lib.Server
+    ( application
+    )
+where
+
+import           Lib.App
+import           Lib.StaticInfo                 ( StaticInfo(..) )
+
+import           Control.Monad.IO.Class         ( liftIO )
+import qualified Data.ByteString.Char8    as BS
+
+{- | This is our main application. 
+You can swap runApp with a runner that implements (e.g.) logging. When the application
+gets non trivial, you can move the monad elsewere and use
+```
+application env = runner (app env)
+```
+-}
+application :: AppEnv -> IO ()
+application env = runApp env $ do
+    sInfo <- grab @StaticInfo
+    liftIO $ BS.putStrLn $ BS.concat ["Version ", (sVersion sInfo)]
+
+{-# START_FILE src/Lib/Config.hs #-}
+module Lib.Config
+    ( Config(..)
+    , loadConfig
+    )
+where
+
+import           Toml                           ( TomlCodec
+                                                , (.=)
+                                                )
+import           Control.Monad.IO.Class         ( MonadIO )
+import           Data.ByteString                ( ByteString )
+
+import qualified Toml
+
+-- | Data type for the configurable elements of the application.
+data Config = Config
+    { cVersion   :: !ByteString
+    }
+
+-- | TOML codec for the 'Config' data type.
+configT :: TomlCodec Config
+configT = Config <$> Toml.byteString "version" .= cVersion
+
+-- | Loads the @config.toml@ file.
+loadConfig :: MonadIO m => m Config
+loadConfig = Toml.decodeFile configT "config.toml"
+
 {-# START_FILE app/Main.hs #-}
 module Main where
 
-import Lib (loadEnv, runEnv)
+import qualified Lib
 
 main :: IO ()
-main = loadEnv >>= runEnv
+main = Lib.main
 
 {-# START_FILE README.md #-}
 # {{name}}
