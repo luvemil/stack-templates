@@ -1,0 +1,346 @@
+{-# START_FILE package.yaml #-}
+name:                {{name}}
+version:             0.1.0
+github:              "{{github-username}}{{^github-username}}githubuser{{/github-username}}/{{name}}"
+license:             BSD3
+author:              "{{author-name}}{{^author-name}}Author name here{{/author-name}}"
+maintainer:          "{{author-email}}{{^author-email}}example@example.com{{/author-email}}"
+copyright:           "{{copyright}}{{^copyright}}{{year}}{{^year}}2018{{/year}} {{author-name}}{{^author-name}}Author name here{{/author-name}}{{/copyright}}"
+
+description:         Please see the README on GitHub at <https://github.com/{{github-username}}{{^github-username}}githubuser{{/github-username}}/{{name}}#readme>
+
+
+extra-source-files:
+- README.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+
+dependencies:
+  - base >= 4.7 && < 5
+  - amazonka
+  - amazonka-dynamodb
+  - amazonka-s3
+  - aws-lambda-haskell-runtime >= 3.0.0
+  - aeson
+  - polysemy
+  - polysemy-plugin
+  - containers
+  - text
+  - lens
+  - generic-lens
+  - transformers
+  - filepath
+  - wreq
+  - bytestring
+  - http-types
+  - case-insensitive
+  - scalpel
+  - optparse-generic
+  - lens-aeson
+  - uuid
+  - conduit
+  - unordered-containers
+
+ghc-options:
+  - -Wall
+  - -Wincomplete-uni-patterns
+  - -Wincomplete-record-updates
+  - -Wcompat
+  - -Widentities
+  - -Wredundant-constraints
+  - -fhide-source-paths
+  - -Wpartial-fields
+  - -fplugin=Polysemy.Plugin
+
+library:
+  source-dirs: src
+
+executables:
+  bootstrap:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -O2
+    - -with-rtsopts=-N
+    dependencies:
+    - {{name}}
+
+tests:
+  {{name}}-test:
+    main: Spec.hs
+    source-dirs: test
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    dependencies:
+      - {{name}}
+      - hspec
+      # - QuickCheck
+
+default-extensions:
+  - BangPatterns
+  - ConstraintKinds
+  - DataKinds
+  - DeriveGeneric
+  - DerivingStrategies
+  - DerivingVia
+  - FlexibleContexts
+  - FlexibleInstances
+  - GADTs
+  - GeneralizedNewtypeDeriving
+  - ImportQualifiedPost
+  - InstanceSigs
+  - KindSignatures
+  - LambdaCase
+  - NamedFieldPuns
+  - MultiParamTypeClasses
+  - OverloadedStrings
+  - OverloadedLabels
+  - PolyKinds
+  - RankNTypes
+  - RecordWildCards
+  - ScopedTypeVariables
+  - TypeApplications
+  - TypeFamilies
+  - TypeOperators
+
+{-# START_FILE Setup.hs #-}
+import Distribution.Simple
+main = defaultMain
+
+{-# START_FILE test/Spec.hs #-}
+{-# OPTIONS_GHC -F -pgmF hspec-discover #-}
+
+module Spec where
+
+{-# START_FILE test/LibSpec.hs #-}
+module LibSpec where
+
+import Test.Hspec
+
+main :: IO ()
+main = hspec spec
+
+spec :: Spec
+{-# NOINLINE spec #-}
+spec = do
+    describe "Dummy Test" $ do
+        it "succeeds" $ do
+            True `shouldBe` True
+
+{-# START_FILE Makefile #-}
+IMAGE_TAG=latest
+
+all:
+	@docker build . -t ${IMAGE_NAME}:${IMAGE_TAG}
+
+run-local:
+	@docker run --env-file .runenv --rm -p 9000:8080 ${IMAGE_NAME}:${IMAGE_TAG}
+
+publish:
+	@docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+	@docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+	@docker rmi ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+
+{-# START_FILE Dockerfile #-}
+ARG OUTPUT_DIR=/root/output
+ARG EXECUTABLE_NAME=bootstrap
+
+FROM ghcr.io/luvemil/base-hs-lambda:cryptonite as build
+
+# Build the dependencies
+RUN mkdir -p /root/lambda-function/
+RUN cd /root/lambda-function
+WORKDIR /root/lambda-function/
+
+COPY package.yaml /root/lambda-function/
+COPY stack_build.yaml /root/lambda-function/stack.yaml
+COPY lib /root/lambda-function/lib
+
+RUN stack build --dependencies-only \
+    --flag cryptonite:-use_target_attributes
+
+# Build the lambda
+COPY . /root/lambda-function/
+# Overwrite stack.yaml
+COPY stack_build.yaml /root/lambda-function/stack.yaml
+
+RUN stack build \
+    --flag cryptonite:-use_target_attributes \
+    --copy-bins
+
+ARG OUTPUT_DIR
+
+RUN mkdir -p ${OUTPUT_DIR} && \
+    mkdir -p ${OUTPUT_DIR}/lib
+
+ARG EXECUTABLE_NAME
+
+RUN cp $(stack path --local-bin)/${EXECUTABLE_NAME} ${OUTPUT_DIR}/${EXECUTABLE_NAME}
+
+ENTRYPOINT sh
+
+FROM public.ecr.aws/lambda/provided:al2 as deploy
+
+ARG EXECUTABLE_NAME
+
+WORKDIR ${LAMBDA_RUNTIME_DIR}
+
+ARG OUTPUT_DIR
+
+COPY --from=build ${OUTPUT_DIR} .
+
+RUN mv ${EXECUTABLE_NAME} bootstrap || true
+
+CMD [ "handler" ]
+
+{-# START_FILE .env.sample #-}
+export REGISTRY=registry
+export IMAGE_NAME=image-name
+
+{-# START_FILE .runenv.sample #-}
+YOUR_VAR=<value>
+
+{-# START_FILE src/Lib.hs #-}
+module Lib where
+
+import GHC.Generics
+import Data.Aeson
+import Aws.Lambda
+
+data Person = Person
+  { personName :: String
+  , personAge :: Int
+  } deriving (Generic)
+
+instance FromJSON Person
+instance ToJSON Person
+
+handler :: Person -> Context () -> IO (Either String Person)
+handler person context =
+  if personAge person > 0 then
+    return (Right person)
+  else
+    return (Left "A person's age must be positive")
+
+{-# START_FILE app/Main.hs #-}
+module Main where
+
+import Aws.Lambda
+import qualified Lib
+
+main :: IO ()
+main =
+  runLambdaHaskellRuntime
+    defaultDispatcherOptions
+    (pure ())
+    id
+    (addStandaloneLambdaHandler "handler" Lib.handler)
+
+{-# START_FILE README.md #-}
+# {{name}}
+
+{-# START_FILE stack.yaml #-}
+resolver: nightly-2022-11-12
+
+packages:
+- .
+
+extra-deps:
+- git: https://github.com/eir-forsakring/aws-lambda-haskell-runtime.git
+  commit: 3845d73325036aa6871c51981ffc348917622c78
+- git: https://github.com/brendanhay/amazonka.git
+  commit: 2574d4161326b56e0d359bcd9ec6e57c25e94d0d
+  subdirs:
+    - lib/amazonka
+    - lib/amazonka-core
+    - lib/services/amazonka-sts
+    - lib/services/amazonka-sso
+    - lib/services/amazonka-s3
+    - lib/services/amazonka-dynamodb
+
+{-# START_FILE stack_build.yaml #-}
+resolver: nightly-2022-11-12
+
+packages:
+- .
+
+extra-deps:
+- git: https://github.com/eir-forsakring/aws-lambda-haskell-runtime.git
+  commit: 3845d73325036aa6871c51981ffc348917622c78
+- git: https://github.com/brendanhay/amazonka.git
+  commit: 2574d4161326b56e0d359bcd9ec6e57c25e94d0d
+  subdirs:
+    - lib/amazonka
+    - lib/amazonka-core
+    - lib/services/amazonka-sts
+    - lib/services/amazonka-sso
+    - lib/services/amazonka-s3
+    - lib/services/amazonka-dynamodb
+
+{-# START_FILE lib/.gitkeep #-}
+
+{-# START_FILE .gitignore #-}
+.stack-work/
+*~
+
+lib/*
+!lib/.gitkeep
+
+.env
+!.env.sample
+
+.runenv
+!.runenv.sample
+
+{-# START_FILE .dockerignore #-}
+.stack-work/
+build/
+*~
+
+.env
+!.env.sample
+
+.runenv
+!.runenv.sample
+
+{-# START_FILE LICENSE #-}
+Copyright {{author-name}}{{^author-name}}Author name here{{/author-name}} (c) {{year}}{{^year}}2018{{/year}}
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+
+    * Neither the name of {{author-name}}{{^author-name}}Author name here{{/author-name}} nor the names of other
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
